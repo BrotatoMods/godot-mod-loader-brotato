@@ -75,6 +75,12 @@ var mod_missing_dependencies = {}
 # Things to keep to ensure they are not garbage collected (used by `save_scene`)
 var _saved_objects = []
 
+# True if ModLoader has displayed the warning about using zipped mods
+var has_shown_editor_warning = false
+
+# Can be used in the editor to load mods from your Steam workshop directory
+var workshop_path_override = ""
+
 
 # Main
 # =============================================================================
@@ -160,24 +166,77 @@ func _init():
 # Loop over "res://mods" and add any mod zips to the unpacked virtual directory
 # (UNPACKED_DIR)
 func _load_mod_zips()->int:
-	# Path to the games mod folder
-	var game_mod_folder_path = ModLoaderUtils.get_local_folder_dir("mods")
-
-	var dir = Directory.new()
-	if dir.open(game_mod_folder_path) != OK:
-		ModLoaderUtils.log_error("Can't open mod folder %s." % game_mod_folder_path, LOG_NAME)
-		return -1
-	if dir.list_dir_begin() != OK:
-		ModLoaderUtils.log_error("Can't read mod folder %s." % game_mod_folder_path, LOG_NAME)
-		return -1
-
-	var has_shown_editor_warning = false
-
 	var zipped_mods_count = 0
+	var use_workshop = true
+
+	if not use_workshop:
+		# Path to the games mod folder
+		var mods_folder_path = ModLoaderUtils.get_local_folder_dir("mods")
+
+		# If we're not using Steam workshop, just loop over the mod ZIPs.
+		zipped_mods_count += _load_zips_in_folder(mods_folder_path)
+	else:
+		# If we're using Steam workshop, loop over the workshop item
+		# directories. Note that we'll need two loops for this (one for each
+		# workshop item's folder, and one to find the mod ZIPs, with the 2nd
+		# lop being handled via `_load_zips_in_folder`)
+		var workshop_folder_path = ModLoaderUtils.get_steam_workshop_dir()
+
+		if not workshop_path_override == "":
+			workshop_folder_path = workshop_path_override
+
+		var workshop_dir = Directory.new()
+		var workshop_dir_open_error = workshop_dir.open(workshop_folder_path)
+		if workshop_dir_open_error != OK:
+			ModLoaderUtils.log_error("Can't open workshop folder %s (Error: %s)" % [workshop_folder_path, workshop_dir_open_error], LOG_NAME)
+			return -1
+		var workshop_dir_listdir_error = workshop_dir.list_dir_begin()
+		if workshop_dir_listdir_error != OK:
+			ModLoaderUtils.log_error("Can't read workshop folder %s (Error: %s)" % [workshop_folder_path, workshop_dir_listdir_error], LOG_NAME)
+			return -1
+
+		# Loop 1: Workshop folders
+		while true:
+			# Get the next workshop item folder
+			var item_dir = workshop_dir.get_next()
+			var item_path = workshop_dir.get_current_dir() + "/" + item_dir
+
+			ModLoaderUtils.log_info("Checking workshop item path: \"%s\"" % item_path, LOG_NAME)
+
+			# Stop loading mods when there's no more folders
+			if item_dir == '':
+				break
+
+			# Only check directories
+			if not workshop_dir.current_is_dir():
+				continue
+
+			# Loop 2: ZIPs inside the workshop folders
+			zipped_mods_count += _load_zips_in_folder(ProjectSettings.globalize_path(item_path))
+
+		workshop_dir.list_dir_end()
+
+	return zipped_mods_count
+
+
+# Load the mod ZIP from the provided directory
+func _load_zips_in_folder(folder_path) -> int:
+	var zipped_mods_count = 0
+
+	var mod_dir = Directory.new()
+	var mod_dir_open_error = mod_dir.open(folder_path)
+	if mod_dir_open_error != OK:
+		ModLoaderUtils.log_error("Can't open mod folder %s (Error: %s)" % [folder_path, mod_dir_open_error], LOG_NAME)
+		return -1
+	var mod_dir_listdir_error = mod_dir.list_dir_begin()
+	if mod_dir_listdir_error != OK:
+		ModLoaderUtils.log_error("Can't read mod folder %s (Error: %s)" % [folder_path, mod_dir_listdir_error], LOG_NAME)
+		return -1
+
 	# Get all zip folders inside the game mod folder
 	while true:
 		# Get the next file in the directory
-		var mod_zip_file_name = dir.get_next()
+		var mod_zip_file_name = mod_dir.get_next()
 
 		# If there is no more file
 		if mod_zip_file_name == '':
@@ -189,11 +248,11 @@ func _load_mod_zips()->int:
 			continue
 
 		# If the current file is a directory
-		if dir.current_is_dir():
+		if mod_dir.current_is_dir():
 			# Go to the next file
 			continue
 
-		var mod_folder_path = game_mod_folder_path.plus_file(mod_zip_file_name)
+		var mod_folder_path = folder_path.plus_file(mod_zip_file_name)
 		var mod_folder_global_path = ProjectSettings.globalize_path(mod_folder_path)
 		var is_mod_loaded_success = ProjectSettings.load_resource_pack(mod_folder_global_path, false)
 
@@ -223,8 +282,10 @@ func _load_mod_zips()->int:
 		ModLoaderUtils.log_success(str(mod_zip_file_name, " loaded."), LOG_NAME)
 		zipped_mods_count += 1
 
-	dir.list_dir_end()
+	mod_dir.list_dir_end()
+
 	return zipped_mods_count
+
 
 
 # Loop over UNPACKED_DIR and triggers `_init_mod_data` for each mod directory,
